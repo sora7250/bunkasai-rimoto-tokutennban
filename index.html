@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>エアホッケー リモート得点板</title>
+  <style>
+    body { font-family: sans-serif; background-color: #222; color: #fff; margin: 0; padding: 0; text-align: center; }
+    .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+    .screen { display: none; }
+    .active { display: block; }
+    
+    h1, h2, h3 { margin: 10px 0; }
+    input[type="text"], input[type="number"] { padding: 10px; font-size: 16px; margin: 5px; border-radius: 5px; border: 1px solid #ccc; width: 80%; max-width: 300px; text-align: center; }
+    button { padding: 15px 30px; font-size: 18px; margin: 10px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; font-weight: bold; }
+    button:disabled { background-color: #555; cursor: not-allowed; }
+    .btn-danger { background-color: #dc3545; }
+    .btn-success { background-color: #28a745; }
+
+    /* スライダーUIのスタイル */
+    .slider-container { margin: 30px auto; width: 80%; max-width: 300px; padding: 20px; background: #333; border-radius: 10px; }
+    .checkbox-label { font-size: 18px; display: block; margin-bottom: 20px; cursor: pointer; }
+    .checkbox-label input { transform: scale(1.5); margin-right: 10px; }
+    input[type="range"] { width: 100%; height: 40px; -webkit-appearance: none; background: #555; border-radius: 20px; outline: none; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 40px; height: 40px; background: #28a745; border-radius: 50%; cursor: pointer; }
+    
+    /* 大画面用の表示スタイル */
+    .display-score { font-size: 120px; font-weight: bold; margin: 0; line-height: 1; }
+    .display-name { font-size: 40px; margin: 10px 0; color: #ffeb3b; }
+    .display-timer { font-size: 80px; font-family: monospace; margin: 20px 0; color: #00ffff; }
+    .flex-row { display: flex; justify-content: space-around; align-items: center; margin-top: 30px; }
+    .player-box { width: 45%; background: #333; padding: 20px; border-radius: 15px; }
+
+    /* 操作盤スコアボタン */
+    .score-ctrl-btn { font-size: 30px; padding: 10px 20px; margin: 5px; width: 80px; border-radius: 10px; }
+
+    /* モーダル */
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
+    .modal.show { display: flex; }
+    .modal h2 { color: #ff4444; font-size: 40px; }
+
+    .loader { border: 8px solid #f3f3f3; border-top: 8px solid #007bff; border-radius: 50%; width: 60px; height: 60px; animation: spin 2s linear infinite; margin: 20px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- 同期エラーモーダル -->
+  <div id="errorModal" class="modal">
+    <h2>⚠️ 同期エラー</h2>
+    <p>端末の連携が解除されました。</p>
+    <button onclick="resetApp()">最初の画面に戻る</button>
+  </div>
+
+  <div class="container">
+    
+    <!-- 1. ロール選択画面 -->
+    <div id="screen-role" class="screen active">
+      <h1>エアホッケー システム</h1>
+      <p>この端末の役割を選択してください</p>
+      <button onclick="selectRole('controller')">📱 操作端末 (受付・操作)</button>
+      <br>
+      <button onclick="selectRole('display')">📺 表示端末 (大画面モニタ)</button>
+    </div>
+
+    <!-- 2. ペアリング画面 (操作端末用) -->
+    <div id="screen-pair-ctrl" class="screen">
+      <h2>連携セッション作成</h2>
+      <p>連携ID (自動生成): <span id="ctrlGeneratedId" style="font-size:24px; font-weight:bold; color:#00ffff;"></span></p>
+      <input type="text" id="ctrlPinInput" placeholder="任意のPIN (数字6桁)を入力" maxlength="6">
+      <br>
+      <button onclick="createSession()" class="btn-success">セッション作成</button>
+      <br><br>
+      <button onclick="resetApp()" class="btn-danger">連携解除</button>
+    </div>
+
+    <!-- 3. ペアリング画面 (表示端末用) -->
+    <div id="screen-pair-disp" class="screen">
+      <h2>表示端末 連携</h2>
+      <input type="text" id="dispIdInput" placeholder="連携IDを入力">
+      <br>
+      <input type="text" id="dispPinInput" placeholder="PIN (数字6桁)を入力" maxlength="6">
+      <br>
+      <button onclick="joinSession()" class="btn-success">連携開始</button>
+      <br><br>
+      <button onclick="resetApp()" class="btn-danger">連携解除</button>
+    </div>
+
+    <!-- 4. チケット確認画面 (操作端末のみ) -->
+    <div id="screen-ticket" class="screen">
+      <h2>🎟️ チケット確認</h2>
+      <p>お客様のチケットを目視で確認してください。</p>
+      
+      <div class="slider-container">
+        <label class="checkbox-label">
+          <input type="checkbox" id="ticketCheckbox" onchange="toggleSlider()">
+          不正利用がないことを確認しました。
+        </label>
+        <p style="font-size:12px; color:#aaa;">チェック後、右へスライドして解放</p>
+        <input type="range" id="unlockSlider" min="0" max="100" value="0" disabled oninput="checkSlider()">
+      </div>
+      <br>
+      <button onclick="disconnectSession()" class="btn-danger">連携解除</button>
+    </div>
+
+    <!-- 5. 待機中画面 (表示端末のみ) -->
+    <div id="screen-waiting" class="screen">
+      <h2>準備中</h2>
+      <p style="font-size:24px;">開始を待機しています</p>
+      <div class="loader"></div>
+      <br><br>
+      <button onclick="disconnectSession()" class="btn-danger" style="margin-top:50px;">連携解除</button>
+    </div>
+
+    <!-- 6. ゲーム設定画面 (操作端末のみ) -->
+    <div id="screen-settings" class="screen">
+      <h2>⚙️ ゲーム設定</h2>
+      <input type="text" id="p1NameInput" placeholder="プレイヤー1の名前" value="Player 1">
+      <input type="text" id="p2NameInput" placeholder="プレイヤー2の名前" value="Player 2">
+      <hr style="border-color:#555;">
+      <p>セット得点 (何点マッチか)</p>
+      <input type="number" id="setPointInput" value="7" min="1" max="99">
+      <p>制限時間設定</p>
+      <select id="timerMode" style="padding:10px; font-size:16px;">
+        <option value="countdown">カウントダウン</option>
+        <option value="countup">カウントアップ</option>
+      </select>
+      <br>
+      <input type="number" id="timerMin" value="3" min="0" max="60" style="width:60px;"> 分 
+      <input type="number" id="timerSec" value="0" min="0" max="59" style="width:60px;"> 秒
+      <br><br>
+      <button onclick="startGame()" class="btn-success" style="width:80%;">▶️ ゲームスタート</button>
+    </div>
+
+    <!-- 7. ゲームプレイ画面 -->
+    <div id="screen-play" class="screen">
+      <div class="flex-row">
+        <div class="player-box">
+          <div id="playP1Name" class="display-name">Player 1</div>
+          <div id="playP1Score" class="display-score">0</div>
+          <div id="ctrlP1Buttons" style="display:none; margin-top:20px;">
+            <button onclick="changeScore(1, 1)" class="score-ctrl-btn btn-success">+1</button>
+            <button onclick="changeScore(1, -1)" class="score-ctrl-btn btn-danger">-1</button>
+          </div>
+        </div>
+        <div class="player-box">
+          <div id="playP2Name" class="display-name">Player 2</div>
+          <div id="playP2Score" class="display-score">0</div>
+          <div id="ctrlP2Buttons" style="display:none; margin-top:20px;">
+            <button onclick="changeScore(2, 1)" class="score-ctrl-btn btn-success">+1</button>
+            <button onclick="changeScore(2, -1)" class="score-ctrl-btn btn-danger">-1</button>
+          </div>
+        </div>
+      </div>
+      
+      <div id="playTimer" class="display-timer">00:00</div>
+      
+      <div id="ctrlGameButtons" style="display:none; margin-top:30px;">
+        <button onclick="endGameByForce()" class="btn-danger">🛑 強制終了</button>
+      </div>
+    </div>
+
+    <!-- 8. 終了画面 -->
+    <div id="screen-end" class="screen">
+      <h1 style="font-size:50px; color:#ff4444;">GAME SET</h1>
+      <h2 style="font-size:30px;">WINNER: <span id="endWinner" style="color:#ffeb3b;"></span></h2>
+      <p style="font-size:24px;">スコア: <span id="endScore"></span></p>
+      <p style="font-size:24px; color:#00ffff;">差点: <span id="endDiff"></span> 点差</p>
+      
+      <div id="ctrlEndButtons" style="display:none; margin-top:40px;">
+        <button onclick="completeEnd()" class="btn-success" style="padding:20px 40px; font-size:24px;">🔄 完全終了</button>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // ========================================================
+    // 【重要】ここにGASのWebアプリURLを貼り付けてください！
+    // ========================================================
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbyUIIGzcxnegqVn4JSvDUwtMh_IUf5XccZb1m_2S2l-5Hz3KIRmRpUJSd51NWFq-wn7/exec";
+    
+    // アプリのグローバルステート
+    let myRole = ""; // 'controller' or 'display'
+    let mySessionId = "";
+    let globalState = null;
+    let pollingInterval = null;
+    
+    // タイマー動作用
+    let timerInterval = null;
+
+    // 全角英数字を半角に変換するユーティリティ関数
+    function toHalfWidth(str) {
+      return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function(s) {
+        return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
+      });
+    }
+
+    // 画面切り替え関数
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+    }
+
+    function resetApp() {
+      if (pollingInterval) clearInterval(pollingInterval);
+      if (timerInterval) clearInterval(timerInterval);
+      myRole = ""; mySessionId = ""; globalState = null;
+      document.getElementById("errorModal").classList.remove("show");
+      showScreen("screen-role");
+    }
+
+    function selectRole(role) {
+      myRole = role;
+      if (role === 'controller') {
+        const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        const len = Math.floor(Math.random() * 3) + 6;
+        let id = "";
+        for (let i = 0; i < len; i++) id += chars.charAt(Math.floor(Math.random() * chars.length));
+        document.getElementById("ctrlGeneratedId").innerText = id;
+        showScreen("screen-pair-ctrl");
+      } else {
+        showScreen("screen-pair-disp");
+      }
+    }
+
+    // API通信ラッパー
+    async function apiCall(action, payload) {
+      payload.action = action;
+      try {
+        const res = await fetch(GAS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        return data.data;
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    async function createSession() {
+      const pinRaw = document.getElementById("ctrlPinInput").value;
+      const pin = toHalfWidth(pinRaw);
+      if (pin.length !== 6 || isNaN(pin)) return alert("PINは6桁の数字を入力してください。");
+      
+      const id = document.getElementById("ctrlGeneratedId").innerText;
+      try {
+        await apiCall("createSession", { pin: pin });
+        mySessionId = id;
+        startPolling();
+        showScreen("screen-ticket");
+        resetSlider();
+      } catch (e) {
+        alert("セッション作成失敗: " + e.message);
+      }
+    }
+
+    async function joinSession() {
+      const id = document.getElementById("dispIdInput").value.trim();
+      const pin = toHalfWidth(document.getElementById("dispPinInput").value);
+      if (!id || pin.length !== 6) return alert("IDと6桁のPINを正しく入力してください。");
+      
+      try {
+        const res = await apiCall("joinSession", { sessionId: id, pin: pin });
+        mySessionId = id;
+        globalState = res.state;
+        startPolling();
+        updateDisplayBasedOnState();
+      } catch (e) {
+        alert("連携失敗: " + e.message);
+      }
+    }
+
+    function disconnectSession() {
+      apiCall("disconnect", { sessionId: mySessionId });
+      resetApp();
+    }
+
+    // ポーリング処理（1.5秒間隔で状態を取得）
+    function startPolling() {
+      if (pollingInterval) clearInterval(pollingInterval);
+      pollingInterval = setInterval(async () => {
+        try {
+          const res = await apiCall("getState", { sessionId: mySessionId });
+          globalState = res.state;
+          updateDisplayBasedOnState();
+        } catch (e) {
+          if (e.message.includes("DISCONNECTED")) {
+            document.getElementById("errorModal").classList.add("show");
+            if (pollingInterval) clearInterval(pollingInterval);
+          }
+        }
+      }, 1500);
+    }
+
+    // 状態同期と画面反映
+    function updateDisplayBasedOnState() {
+      if (!globalState) return;
+      const st = globalState.status;
+
+      if (st === "ticket_check") {
+        if (myRole === "display") showScreen("screen-waiting");
+        else if (myRole === "controller" && document.getElementById("screen-settings").classList.contains("active") === false) {
+           showScreen("screen-ticket"); // 設定画面にいなければチケット画面へ
+        }
+      } else if (st === "settings") {
+        if (myRole === "display") showScreen("screen-waiting");
+        else if (myRole === "controller") showScreen("screen-settings");
+      } else if (st === "playing") {
+        showScreen("screen-play");
+        renderPlayScreen();
+      } else if (st === "finished") {
+        showScreen("screen-end");
+        renderEndScreen();
+      }
+    }
+
+    // スライダーロジック
+    function toggleSlider() {
+      const isChecked = document.getElementById("ticketCheckbox").checked;
+      const slider = document.getElementById("unlockSlider");
+      slider.disabled = !isChecked;
+      if (!isChecked) slider.value = 0;
+    }
+
+    function checkSlider() {
+      const slider = document.getElementById("unlockSlider");
+      if (slider.value >= 100) {
+        slider.value = 100;
+        slider.disabled = true;
+        document.getElementById("ticketCheckbox").disabled = true;
+        // ロック解除成功 -> 設定画面へ状態更新
+        globalState.status = "settings";
+        apiCall("updateState", { sessionId: mySessionId, state: globalState });
+        showScreen("screen-settings");
+      }
+    }
+
+    function resetSlider() {
+      document.getElementById("ticketCheckbox").checked = false;
+      document.getElementById("ticketCheckbox").disabled = false;
+      const slider = document.getElementById("unlockSlider");
+      slider.value = 0;
+      slider.disabled = true;
+    }
+
+    // ゲームロジック
+    async function startGame() {
+      const min = parseInt(document.getElementById("timerMin").value) || 0;
+      const sec = parseInt(document.getElementById("timerSec").value) || 0;
+      const totalSec = (min * 60) + sec;
+      
+      globalState.settings = {
+        setPoint: parseInt(document.getElementById("setPointInput").value) || 7,
+        timerMode: document.getElementById("timerMode").value,
+        duration: totalSec
+      };
+      
+      globalState.game = {
+        p1Name: document.getElementById("p1NameInput").value || "Player 1",
+        p2Name: document.getElementById("p2NameInput").value || "Player 2",
+        p1Score: 0, p2Score: 0,
+        remainingTime: totalSec,
+        timerRunning: true,
+        winner: "", loser: "", scoreDiff: 0
+      };
+      globalState.status = "playing";
+      
+      await apiCall("updateState", { sessionId: mySessionId, state: globalState });
+      startLocalTimer();
+    }
+
+    function renderPlayScreen() {
+      document.getElementById("playP1Name").innerText = globalState.game.p1Name;
+      document.getElementById("playP2Name").innerText = globalState.game.p2Name;
+      document.getElementById("playP1Score").innerText = globalState.game.p1Score;
+      document.getElementById("playP2Score").innerText = globalState.game.p2Score;
+      
+      updateTimerDisplay(globalState.game.remainingTime);
+
+      if (myRole === "controller") {
+        document.getElementById("ctrlP1Buttons").style.display = "block";
+        document.getElementById("ctrlP2Buttons").style.display = "block";
+        document.getElementById("ctrlGameButtons").style.display = "block";
+      } else {
+        document.getElementById("ctrlP1Buttons").style.display = "none";
+        document.getElementById("ctrlP2Buttons").style.display = "none";
+        document.getElementById("ctrlGameButtons").style.display = "none";
+      }
+      
+      // コントローラー側で自動終了判定
+      if (myRole === "controller") {
+        const sp = globalState.settings.setPoint;
+        if (globalState.game.p1Score >= sp || globalState.game.p2Score >= sp) {
+          triggerGameEnd();
+        }
+      }
+    }
+
+    async function changeScore(player, amount) {
+      if (player === 1) {
+        globalState.game.p1Score = Math.max(0, globalState.game.p1Score + amount);
+      } else {
+        globalState.game.p2Score = Math.max(0, globalState.game.p2Score + amount);
+      }
+      // 即時反映とAPI送信
+      renderPlayScreen();
+      apiCall("updateState", { sessionId: mySessionId, state: globalState });
+    }
+
+    // タイマー計算ロジック（ローカルで描画）
+    function startLocalTimer() {
+      if (timerInterval) clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        if (globalState && globalState.status === "playing" && globalState.game.timerRunning) {
+          if (globalState.settings.timerMode === "countdown") {
+            globalState.game.remainingTime--;
+            if (globalState.game.remainingTime <= 0) {
+               globalState.game.remainingTime = 0;
+               if (myRole === "controller") triggerGameEnd();
+            }
+          } else {
+            // カウントアップ
+            globalState.game.remainingTime++;
+          }
+          updateTimerDisplay(globalState.game.remainingTime);
+        }
+      }, 1000);
+    }
+
+    function updateTimerDisplay(seconds) {
+      const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+      const s = (seconds % 60).toString().padStart(2, '0');
+      document.getElementById("playTimer").innerText = m + ":" + s;
+    }
+
+    function endGameByForce() {
+      triggerGameEnd();
+    }
+
+    function triggerGameEnd() {
+      const s1 = globalState.game.p1Score;
+      const s2 = globalState.game.p2Score;
+      let wName = "引き分け", diff = 0;
+      
+      if (s1 > s2) {
+        wName = globalState.game.p1Name;
+        diff = s1 - s2;
+      } else if (s2 > s1) {
+        wName = globalState.game.p2Name;
+        diff = s2 - s1;
+      }
+
+      globalState.game.winner = wName;
+      globalState.game.scoreDiff = diff;
+      globalState.game.timerRunning = false;
+      globalState.status = "finished";
+      
+      apiCall("updateState", { sessionId: mySessionId, state: globalState });
+    }
+
+    function renderEndScreen() {
+      document.getElementById("endWinner").innerText = globalState.game.winner;
+      document.getElementById("endScore").innerText = globalState.game.p1Score + " - " + globalState.game.p2Score;
+      document.getElementById("endDiff").innerText = globalState.game.scoreDiff;
+      
+      if (myRole === "controller") {
+        document.getElementById("ctrlEndButtons").style.display = "block";
+      } else {
+        document.getElementById("ctrlEndButtons").style.display = "none";
+      }
+    }
+
+    async function completeEnd() {
+      // 初期状態へリセット
+      globalState.status = "ticket_check";
+      globalState.game = { p1Name: "", p2Name: "", p1Score: 0, p2Score: 0, timerRunning: false, remainingTime: 0 };
+      await apiCall("updateState", { sessionId: mySessionId, state: globalState });
+      resetSlider();
+      showScreen("screen-ticket");
+    }
+
+  </script>
+</body>
+</html>
