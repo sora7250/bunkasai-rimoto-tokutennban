@@ -17,24 +17,20 @@
     .btn-danger { background-color: #dc3545; }
     .btn-success { background-color: #28a745; }
 
-    /* スライダーUIのスタイル */
     .slider-container { margin: 30px auto; width: 80%; max-width: 300px; padding: 20px; background: #333; border-radius: 10px; }
     .checkbox-label { font-size: 18px; display: block; margin-bottom: 20px; cursor: pointer; }
     .checkbox-label input { transform: scale(1.5); margin-right: 10px; }
     input[type="range"] { width: 100%; height: 40px; -webkit-appearance: none; background: #555; border-radius: 20px; outline: none; }
     input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 40px; height: 40px; background: #28a745; border-radius: 50%; cursor: pointer; }
     
-    /* 大画面用の表示スタイル */
     .display-score { font-size: 120px; font-weight: bold; margin: 0; line-height: 1; }
     .display-name { font-size: 40px; margin: 10px 0; color: #ffeb3b; }
     .display-timer { font-size: 80px; font-family: monospace; margin: 20px 0; color: #00ffff; }
     .flex-row { display: flex; justify-content: space-around; align-items: center; margin-top: 30px; }
     .player-box { width: 45%; background: #333; padding: 20px; border-radius: 15px; }
 
-    /* 操作盤スコアボタン */
     .score-ctrl-btn { font-size: 30px; padding: 10px 20px; margin: 5px; width: 80px; border-radius: 10px; }
 
-    /* モーダル */
     .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
     .modal.show { display: flex; }
     .modal h2 { color: #ff4444; font-size: 40px; }
@@ -66,12 +62,21 @@
     <!-- 2. ペアリング画面 (操作端末用) -->
     <div id="screen-pair-ctrl" class="screen">
       <h2>連携セッション作成</h2>
-      <p>連携ID (自動生成): <span id="ctrlGeneratedId" style="font-size:24px; font-weight:bold; color:#00ffff;"></span></p>
+      <p>連携ID: <span id="ctrlGeneratedId" style="font-size:24px; font-weight:bold; color:#00ffff;"></span></p>
       <input type="text" id="ctrlPinInput" placeholder="任意のPIN (数字6桁)を入力" maxlength="6">
       <br>
       <button onclick="createSession()" class="btn-success">セッション作成</button>
       <br><br>
-      <button onclick="resetApp()" class="btn-danger">連携解除</button>
+      <button onclick="resetApp()" class="btn-danger">キャンセル</button>
+    </div>
+
+    <!-- 2-A. 操作端末用 接続待機画面 -->
+    <div id="screen-waiting-disp" class="screen">
+      <h2>表示端末の接続を待機しています</h2>
+      <div class="loader"></div>
+      <p style="margin-top:20px; font-size:18px;">表示端末に連携IDとPINを入力してください。</p>
+      <br><br>
+      <button onclick="resetApp()" class="btn-danger">連携キャンセル</button>
     </div>
 
     <!-- 3. ペアリング画面 (表示端末用) -->
@@ -83,7 +88,7 @@
       <br>
       <button onclick="joinSession()" class="btn-success">連携開始</button>
       <br><br>
-      <button onclick="resetApp()" class="btn-danger">連携解除</button>
+      <button onclick="resetApp()" class="btn-danger">キャンセル</button>
     </div>
 
     <!-- 4. チケット確認画面 (操作端末のみ) -->
@@ -178,25 +183,21 @@
     // ========================================================
     // 【重要】ここにGASのWebアプリURLを貼り付けてください！
     // ========================================================
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbyUIIGzcxnegqVn4JSvDUwtMh_IUf5XccZb1m_2S2l-5Hz3KIRmRpUJSd51NWFq-wn7/exec";
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbyYfjy4tLq8SY20xLhdpG1u93KIUjTrwsqN5gmuboeR3aZfSL1yuwjb9aUDHG-OhEwB/exec";
     
-    // アプリのグローバルステート
-    let myRole = ""; // 'controller' or 'display'
+    let myRole = ""; 
     let mySessionId = "";
     let globalState = null;
     let pollingInterval = null;
-    
-    // タイマー動作用
+    let pairingPollingInterval = null; // マッチング待機用の専用間隔
     let timerInterval = null;
 
-    // 全角英数字を半角に変換するユーティリティ関数
     function toHalfWidth(str) {
       return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function(s) {
         return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
       });
     }
 
-    // 画面切り替え関数
     function showScreen(id) {
       document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
@@ -204,6 +205,7 @@
 
     function resetApp() {
       if (pollingInterval) clearInterval(pollingInterval);
+      if (pairingPollingInterval) clearInterval(pairingPollingInterval);
       if (timerInterval) clearInterval(timerInterval);
       myRole = ""; mySessionId = ""; globalState = null;
       document.getElementById("errorModal").classList.remove("show");
@@ -214,9 +216,11 @@
       myRole = role;
       if (role === 'controller') {
         const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        const len = Math.floor(Math.random() * 3) + 6;
+        const len = 6 + Math.floor(Math.random() / (1.0 / 3.0));
         let id = "";
-        for (let i = 0; i < len; i++) id += chars.charAt(Math.floor(Math.random() * chars.length));
+        for (let i = 0; i < len; i++) {
+          id += chars.charAt(Math.floor(Math.random() / (1.0 / chars.length)));
+        }
         document.getElementById("ctrlGeneratedId").innerText = id;
         showScreen("screen-pair-ctrl");
       } else {
@@ -224,7 +228,6 @@
       }
     }
 
-    // API通信ラッパー
     async function apiCall(action, payload) {
       payload.action = action;
       try {
@@ -246,13 +249,26 @@
       const pin = toHalfWidth(pinRaw);
       if (pin.length !== 6 || isNaN(pin)) return alert("PINは6桁の数字を入力してください。");
       
-      const id = document.getElementById("ctrlGeneratedId").innerText;
       try {
-        await apiCall("createSession", { pin: pin });
-        mySessionId = id;
-        startPolling();
-        showScreen("screen-ticket");
-        resetSlider();
+        const res = await apiCall("createSession", { pin: pin });
+        mySessionId = res.sessionId;
+        showScreen("screen-waiting-disp"); // ローディング画面へ移行
+        
+        // シート側で連携が完了したか定期確認する
+        pairingPollingInterval = setInterval(async () => {
+          try {
+            const checkRes = await apiCall("checkConnection", { sessionId: mySessionId });
+            if (checkRes.connected) {
+              clearInterval(pairingPollingInterval);
+              startPolling(); // 以降は通常のGASキャッシュ連携へ
+              showScreen("screen-ticket");
+              resetSlider();
+            }
+          } catch (err) {
+            console.error(err);
+          }
+        }, 2000);
+        
       } catch (e) {
         alert("セッション作成失敗: " + e.message);
       }
@@ -264,11 +280,10 @@
       if (!id || pin.length !== 6) return alert("IDと6桁のPINを正しく入力してください。");
       
       try {
-        const res = await apiCall("joinSession", { sessionId: id, pin: pin });
+        await apiCall("joinSession", { sessionId: id, pin: pin });
         mySessionId = id;
-        globalState = res.state;
         startPolling();
-        updateDisplayBasedOnState();
+        showScreen("screen-waiting");
       } catch (e) {
         alert("連携失敗: " + e.message);
       }
@@ -279,7 +294,6 @@
       resetApp();
     }
 
-    // ポーリング処理（1.5秒間隔で状態を取得）
     function startPolling() {
       if (pollingInterval) clearInterval(pollingInterval);
       pollingInterval = setInterval(async () => {
@@ -296,7 +310,6 @@
       }, 1500);
     }
 
-    // 状態同期と画面反映
     function updateDisplayBasedOnState() {
       if (!globalState) return;
       const st = globalState.status;
@@ -304,7 +317,7 @@
       if (st === "ticket_check") {
         if (myRole === "display") showScreen("screen-waiting");
         else if (myRole === "controller" && document.getElementById("screen-settings").classList.contains("active") === false) {
-           showScreen("screen-ticket"); // 設定画面にいなければチケット画面へ
+           showScreen("screen-ticket");
         }
       } else if (st === "settings") {
         if (myRole === "display") showScreen("screen-waiting");
@@ -318,7 +331,6 @@
       }
     }
 
-    // スライダーロジック
     function toggleSlider() {
       const isChecked = document.getElementById("ticketCheckbox").checked;
       const slider = document.getElementById("unlockSlider");
@@ -332,7 +344,6 @@
         slider.value = 100;
         slider.disabled = true;
         document.getElementById("ticketCheckbox").disabled = true;
-        // ロック解除成功 -> 設定画面へ状態更新
         globalState.status = "settings";
         apiCall("updateState", { sessionId: mySessionId, state: globalState });
         showScreen("screen-settings");
@@ -347,11 +358,14 @@
       slider.disabled = true;
     }
 
-    // ゲームロジック
     async function startGame() {
       const min = parseInt(document.getElementById("timerMin").value) || 0;
       const sec = parseInt(document.getElementById("timerSec").value) || 0;
-      const totalSec = (min * 60) + sec;
+      
+      let totalSec = sec;
+      for (let i = 0; i < min; i++) {
+        totalSec += 60;
+      }
       
       globalState.settings = {
         setPoint: parseInt(document.getElementById("setPointInput").value) || 7,
@@ -391,7 +405,6 @@
         document.getElementById("ctrlGameButtons").style.display = "none";
       }
       
-      // コントローラー側で自動終了判定
       if (myRole === "controller") {
         const sp = globalState.settings.setPoint;
         if (globalState.game.p1Score >= sp || globalState.game.p2Score >= sp) {
@@ -406,12 +419,10 @@
       } else {
         globalState.game.p2Score = Math.max(0, globalState.game.p2Score + amount);
       }
-      // 即時反映とAPI送信
       renderPlayScreen();
       apiCall("updateState", { sessionId: mySessionId, state: globalState });
     }
 
-    // タイマー計算ロジック（ローカルで描画）
     function startLocalTimer() {
       if (timerInterval) clearInterval(timerInterval);
       timerInterval = setInterval(() => {
@@ -423,7 +434,6 @@
                if (myRole === "controller") triggerGameEnd();
             }
           } else {
-            // カウントアップ
             globalState.game.remainingTime++;
           }
           updateTimerDisplay(globalState.game.remainingTime);
@@ -475,14 +485,12 @@
     }
 
     async function completeEnd() {
-      // 初期状態へリセット
       globalState.status = "ticket_check";
       globalState.game = { p1Name: "", p2Name: "", p1Score: 0, p2Score: 0, timerRunning: false, remainingTime: 0 };
       await apiCall("updateState", { sessionId: mySessionId, state: globalState });
       resetSlider();
       showScreen("screen-ticket");
     }
-
   </script>
 </body>
 </html>
