@@ -229,7 +229,7 @@
     // ========================================================
     // 【重要】ここにGASのWebアプリURLを貼り付けてください！
     // ========================================================
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbxbVJ7bOfzZQr2nxeu94zdNfybnK8d7FfNUu7XEsgY8YKDde6khPqcPsgsyPcpoZXZl/exec";
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbzhB6rQlHSpbEhRJEaiNb7K8bDhc3KCf2hSQuzioZPfh7SZk7Tb5kirosPh7fTXML0o/exec";
     
     let myRole = ""; 
     let mySessionId = "";
@@ -237,6 +237,7 @@
     let pollingInterval = null;
     let pairingPollingInterval = null;
     let timerInterval = null;
+    let isPairingCompleted = false; // 多重初期化・チェックボックス勝手解除防止フラグ
 
     // 全角英数字を半角に変換するユーティリティ関数
     function toHalfWidth(str) {
@@ -252,7 +253,13 @@
       if (pollingInterval) clearInterval(pollingInterval);
       if (pairingPollingInterval) clearInterval(pairingPollingInterval);
       if (timerInterval) clearInterval(timerInterval);
-      myRole = ""; mySessionId = ""; globalState = null;
+      pollingInterval = null;
+      pairingPollingInterval = null;
+      timerInterval = null;
+      isPairingCompleted = false;
+      myRole = ""; 
+      mySessionId = ""; 
+      globalState = null;
       document.getElementById("errorModal").classList.remove("show");
       showScreen("screen-role");
     }
@@ -295,21 +302,29 @@
       const pin = toHalfWidth(pinRaw).trim();
       if (pin.length !== 6 || isNaN(pin)) return alert("PINは6桁の数字を入力してください。");
       
-      // 画面に表示されているIDを取得
       const id = document.getElementById("ctrlGeneratedId").innerText.trim();
+      isPairingCompleted = false;
       
       try {
         await apiCall("createSession", { sessionId: id, pin: pin });
         mySessionId = id;
         showScreen("screen-waiting-disp");
         
-        // 表示端末が接続してくるのをシート経由で定期監視
+        // 既存のタイマーをクリア
+        if (pairingPollingInterval) clearInterval(pairingPollingInterval);
+
+        // 表示端末の接続を定期監視（多重実行完全防止ガード付き）
         pairingPollingInterval = setInterval(async () => {
+          if (isPairingCompleted) return;
+
           try {
             const checkRes = await apiCall("checkConnection", { sessionId: mySessionId });
-            if (checkRes.connected) {
+            if (checkRes.connected && !isPairingCompleted) {
+              isPairingCompleted = true; // 即時ロック
               clearInterval(pairingPollingInterval);
-              // 初期状態の生成
+              pairingPollingInterval = null;
+
+              // 初期ステートの設定
               globalState = {
                 status: "ticket_check",
                 settings: {},
@@ -335,7 +350,7 @@
         await apiCall("joinSession", { sessionId: id, pin: pin });
         mySessionId = id;
         showScreen("screen-waiting");
-        startDisplayPolling(); // 表示端末専用の定期取得を開始
+        startDisplayPolling(); // 表示端末専用の定期ステート取得を開始
       } catch (e) {
         alert("連携失敗: " + e.message);
       }
@@ -346,7 +361,7 @@
       resetApp();
     }
 
-    // ★重要：ポーリングは「表示端末」のみが実行（操作端末の自己上書きを完全防止）
+    // 表示端末専用ポーリング（操作端末の自己上書きを完全に回避）
     function startDisplayPolling() {
       if (pollingInterval) clearInterval(pollingInterval);
       pollingInterval = setInterval(async () => {
@@ -368,6 +383,7 @@
           if (e.message && e.message.includes("DISCONNECTED")) {
             document.getElementById("errorModal").classList.add("show");
             clearInterval(pollingInterval);
+            pollingInterval = null;
           }
         }
       }, 1000);
@@ -388,7 +404,7 @@
       }
     }
 
-    // スライダー制御
+    // スライダー・チェックボックス制御
     function toggleSlider() {
       const isChecked = document.getElementById("ticketCheckbox").checked;
       const slider = document.getElementById("unlockSlider");
@@ -410,14 +426,19 @@
     }
 
     function resetSlider() {
-      document.getElementById("ticketCheckbox").checked = false;
-      document.getElementById("ticketCheckbox").disabled = false;
+      const checkbox = document.getElementById("ticketCheckbox");
       const slider = document.getElementById("unlockSlider");
-      slider.value = 0;
-      slider.disabled = true;
+      if (checkbox) {
+        checkbox.checked = false;
+        checkbox.disabled = false;
+      }
+      if (slider) {
+        slider.value = 0;
+        slider.disabled = true;
+      }
     }
 
-    // ゲーム開始（タイムスタンプを共有）
+    // ゲーム開始（UNIXタイムスタンプを共有）
     async function startGame() {
       const min = parseInt(document.getElementById("timerMin").value) || 0;
       const sec = parseInt(document.getElementById("timerSec").value) || 0;
@@ -465,7 +486,7 @@
       }
     }
 
-    // 自律型タイマーエンジン（両端末のローカル時計で独立計算）
+    // 自律型タイマーエンジン（ローカルクロック計算）
     function startLocalTimerEngine() {
       if (timerInterval) clearInterval(timerInterval);
       timerInterval = setInterval(() => {
@@ -548,7 +569,7 @@
       }
     }
 
-    // 完全終了（次のお客様を迎える待機画面へ）
+    // 完全終了（初期画面へ復帰）
     async function completeEnd() {
       globalState.status = "ticket_check";
       globalState.game = { p1Name: "", p2Name: "", p1Score: 0, p2Score: 0, timerRunning: false };
